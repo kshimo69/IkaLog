@@ -9,3 +9,4 @@ IkaConfig.py
 IkaConfig.yaml
 dist/
 screenshots/*.png
+.python-version
