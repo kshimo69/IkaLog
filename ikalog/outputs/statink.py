@@ -24,6 +24,8 @@ import pprint
 
 import urllib3
 import umsgpack
+
+from ikalog.constants import fes_rank_titles
 from ikalog.version import IKALOG_VERSION
 from ikalog.utils import *
 
@@ -323,6 +325,9 @@ class StatInk(object):
         if len(context['game']['death_reasons'].keys()) > 0:
             payload['death_reasons'] = context['game']['death_reasons'].copy()
 
+        if len(self.events) > 0:
+            payload['events'] = list(self.events)
+
         # ResultJudge
 
         if payload.get('rule', None) in ['nawabari']:
@@ -422,6 +427,25 @@ class StatInk(object):
                 [  # 'type', 'stat.ink Field', 'IkaLog Field'
                     ['int', 'cash_after', 'cash'],
                 ], payload, context['scenes']['result_gears'])
+
+        # ResultFesta
+        if payload['lobby'] == 'fest':
+            self._set_values(
+                [  # 'type', 'stat.ink Field', 'IkaLog Field'
+                    ['int', 'fest_exp', 'result_festa_exp_pre'],
+                    ['int', 'fest_exp_after', 'result_festa_exp'],
+                ], payload, context['game'])
+
+            if payload.get('fest_title', None) is not None:
+                current_title = payload['fest_title']
+                if context['game'].get('result_festa_title_changed', False):
+                    try:
+                        index = fes_rank_titles.index(current_title)
+                        current_title = fes_rank_titles[index + 1]
+                    except IndexError:
+                        IkaUtils.dprint('%s: IndexError at fes_rank_titles' % self)
+
+                payload['fest_title_after'] = current_title.lower()
 
         # Team colors
         if ('my_team_color' in context['game']):
@@ -534,12 +558,16 @@ class StatInk(object):
             payload['image_result'] = '(PNG Data)'
         if 'image_judge' in payload:
             payload['image_judge'] = '(PNG Data)'
+        if 'events' in payload:
+            payload['events'] = '(Events)'
 
         pprint.pprint(payload)
 
     def on_game_go_sign(self, context):
         self.time_start_at = int(time.time())
         self.time_end_at = None
+        self.events = []
+        self.time_last_score_msec = None
 
         # check if context['engine']['msec'] exists
         # to allow unit test.
@@ -552,7 +580,6 @@ class StatInk(object):
         self.on_game_go_sign(context)
 
     def on_game_finish(self, context):
-
         self.time_end_at = int(time.time())
         if ('msec' in context['engine']) and (self.time_start_at_msec is not None):
             duration_msec = context['engine']['msec'] - self.time_start_at_msec
@@ -597,6 +624,36 @@ class StatInk(object):
 
         self.post_payload(payload)
 
+    def on_game_killed(self, context):
+        if ('msec' in context['engine']) and (self.time_start_at_msec is not None):
+            event_msec = context['engine']['msec'] - self.time_start_at_msec
+            self.events.append({
+                'type': 'killed',
+                'at': event_msec / 1000,
+            })
+
+    def on_game_dead(self, context):
+        if ('msec' in context['engine']) and (self.time_start_at_msec is not None):
+            event_msec = context['engine']['msec'] - self.time_start_at_msec
+            self.events.append({
+                'type': 'dead',
+                'at': event_msec / 1000,
+            })
+
+    def on_game_paint_score_update(self, context):
+        score = context['game'].get('paint_score', 0)
+        if (score > 0 and 'msec' in context['engine']) and (self.time_start_at_msec is not None):
+            event_msec = context['engine']['msec'] - self.time_start_at_msec
+            # 前回のスコアイベントから 200ms 経っていない場合は処理しない
+            if (self.time_last_score_msec is None) or (event_msec - self.time_last_score_msec >= 200):
+                # IkaUtils.dprint('%s: score=%d at %.3f' % (self, score, event_msec / 1000))
+                self.events.append({
+                    'type': 'point',
+                    'point': score,
+                    'at': event_msec / 1000,
+                })
+                self.time_last_score_msec = event_msec
+
     def __init__(self, api_key=None, debug=False, dry_run=False):
         self.enabled = not (api_key is None)
         self.api_key = api_key
@@ -605,6 +662,9 @@ class StatInk(object):
         self.time_start_at = None
         self.time_end_at = None
         self.time_start_at_msec = None
+
+        self.events = []
+        self.time_last_score_msec = None
 
         self.img_result_detail = None
         self.img_judge = None
